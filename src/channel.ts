@@ -1,4 +1,4 @@
-﻿import {
+import {
   type ChannelPlugin,
   type OpenClawConfig,
   applyAccountNameToChannelSection,
@@ -71,78 +71,24 @@ export const qqbotPlugin: ChannelPlugin<ResolvedQQBotAccount> = {
   reload: { configPrefixes: ["channels.qqbot"] },
   // CLI onboarding wizard
   onboarding: qqbotOnboardingAdapter,
-  // Messaging 配置：用于解析目标地址
+  // 消息目标解析
   messaging: {
-    /**
-     * 规范化目标地址
-     * 支持以下格式：
-     * - qqbot:c2c:openid -> 私聊
-     * - qqbot:group:groupid -> 群聊
-     * - qqbot:channel:channelid -> 频道
-     * - c2c:openid -> 私聊
-     * - group:groupid -> 群聊
-     * - channel:channelid -> 频道
-     * - 纯 openid（32 位十六进制）-> 私聊
-     */
-    normalizeTarget: (target: string) => {
-      // 去掉 qqbot: 前缀（如果有）
-      const id = target.replace(/^qqbot:/i, "");
-
-      // 检查是否是已知格式
-      if (id.startsWith("c2c:") || id.startsWith("group:") || id.startsWith("channel:")) {
-        return { ok: true, to: `qqbot:${id}` };
-      }
-
-      // 检查是否是纯 openid（32 位十六进制，不带连字符）
-      // QQ Bot OpenID 格式类似: 207A5B8339D01F6582911C014668B77B
-      const openIdHexPattern = /^[0-9a-fA-F]{32}$/;
-      if (openIdHexPattern.test(id)) {
-        return { ok: true, to: `qqbot:c2c:${id}` };
-      }
-
-      // 检查是否是 UUID 格式的 openid（带连字符）
-      const openIdUuidPattern = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
-      if (openIdUuidPattern.test(id)) {
-        return { ok: true, to: `qqbot:c2c:${id}` };
-      }
-
-      // 不认识的格式，返回错误
-      return { ok: false, error: `Unknown target format: ${target}` };
+    normalizeTarget: (target) => {
+      // 支持格式: qqbot:c2c:xxx, qqbot:group:xxx, c2c:xxx, group:xxx, openid
+      const normalized = target.replace(/^qqbot:/i, "");
+      return { ok: true, to: normalized };
     },
-    /**
-     * 目标解析器配置
-     * 用于判断一个目标 ID 是否看起来像 QQ Bot 的格式
-     */
     targetResolver: {
-      /**
-       * 判断目标 ID 是否可能是 QQ Bot 格式
-       * 支持以下格式：
-       * - qqbot:c2c:xxx
-       * - qqbot:group:xxx
-       * - qqbot:channel:xxx
-       * - c2c:xxx
-       * - group:xxx
-       * - channel:xxx
-       * - UUID 格式的 openid
-       */
-      looksLikeId: (id: string): boolean => {
-        // 带 qqbot: 前缀的格式
-        if (/^qqbot:(c2c|group|channel):/i.test(id)) {
-          return true;
-        }
-        // 不带前缀但有类型标识
-        if (/^(c2c|group|channel):/i.test(id)) {
-          return true;
-        }
-        // 32 位十六进制 openid（不带连字符）
-        if (/^[0-9a-fA-F]{32}$/.test(id)) {
-          return true;
-        }
-        // UUID 格式的 openid（带连字符）
-        const openIdPattern = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
-        return openIdPattern.test(id);
+      looksLikeId: (id) => {
+        // 先去掉 qqbot: 前缀
+        const normalized = id.replace(/^qqbot:/i, "");
+        // 支持 c2c:xxx, group:xxx, channel:xxx 格式
+        if (normalized.startsWith("c2c:") || normalized.startsWith("group:") || normalized.startsWith("channel:")) return true;
+        // 支持纯 openid（32位十六进制）
+        if (/^[A-F0-9]{32}$/i.test(normalized)) return true;
+        return false;
       },
-      hint: "QQ Bot 目标格式: qqbot:c2c:openid (私聊) 或 qqbot:group:groupid (群聊)",
+      hint: "c2c:<openid> or group:<groupOpenid>",
     },
   },
   config: {
@@ -227,6 +173,80 @@ export const qqbotPlugin: ChannelPlugin<ResolvedQQBotAccount> = {
       });
     },
   },
+  // Messaging 配置：用于解析目标地址
+  messaging: {
+    /**
+     * 规范化目标地址
+     * 支持以下格式：
+     * - qqbot:c2c:openid -> 私聊
+     * - qqbot:group:groupid -> 群聊
+     * - qqbot:channel:channelid -> 频道
+     * - c2c:openid -> 私聊
+     * - group:groupid -> 群聊
+     * - channel:channelid -> 频道
+     * - 纯 openid（32位十六进制）-> 私聊
+     */
+    normalizeTarget: (target: string): string | undefined => {
+      // 去掉 qqbot: 前缀（如果有）
+      const id = target.replace(/^qqbot:/i, "");
+      
+      // 检查是否是已知格式
+      if (id.startsWith("c2c:") || id.startsWith("group:") || id.startsWith("channel:")) {
+        return `qqbot:${id}`;
+      }
+      
+      // 检查是否是纯 openid（32位十六进制，不带连字符）
+      // QQ Bot OpenID 格式类似: 207A5B8339D01F6582911C014668B77B
+      const openIdHexPattern = /^[0-9a-fA-F]{32}$/;
+      if (openIdHexPattern.test(id)) {
+        return `qqbot:c2c:${id}`;
+      }
+
+      // 检查是否是 UUID 格式的 openid（带连字符）
+      const openIdUuidPattern = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+      if (openIdUuidPattern.test(id)) {
+        return `qqbot:c2c:${id}`;
+      }
+      
+      // 不认识的格式，返回 undefined
+      return undefined;
+    },
+    /**
+     * 目标解析器配置
+     * 用于判断一个目标 ID 是否看起来像 QQ Bot 的格式
+     */
+    targetResolver: {
+      /**
+       * 判断目标 ID 是否可能是 QQ Bot 格式
+       * 支持以下格式：
+       * - qqbot:c2c:xxx
+       * - qqbot:group:xxx  
+       * - qqbot:channel:xxx
+       * - c2c:xxx
+       * - group:xxx
+       * - channel:xxx
+       * - UUID 格式的 openid
+       */
+      looksLikeId: (id: string): boolean => {
+        // 带 qqbot: 前缀的格式
+        if (/^qqbot:(c2c|group|channel):/i.test(id)) {
+          return true;
+        }
+        // 不带前缀但有类型标识
+        if (/^(c2c|group|channel):/i.test(id)) {
+          return true;
+        }
+        // 32位十六进制 openid（不带连字符）
+        if (/^[0-9a-fA-F]{32}$/.test(id)) {
+          return true;
+        }
+        // UUID 格式的 openid（带连字符）
+        const openIdPattern = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+        return openIdPattern.test(id);
+      },
+      hint: "QQ Bot 目标格式: qqbot:c2c:openid (私聊) 或 qqbot:group:groupid (群聊)",
+    },
+  },
   outbound: {
     deliveryMode: "direct",
     chunker: chunkText,
@@ -243,7 +263,34 @@ export const qqbotPlugin: ChannelPlugin<ResolvedQQBotAccount> = {
     },
     sendMedia: async ({ to, text, mediaUrl, accountId, replyToId, cfg }) => {
       const account = resolveQQBotAccount(cfg, accountId);
-      const result = await sendMedia({ to, text: text ?? "", mediaUrl: mediaUrl ?? "", accountId, replyToId, account });
+      
+      // 根据文件扩展名自动检测媒体类型
+      let mediaType: "image" | "video" | "voice" = "image";
+      if (mediaUrl) {
+        const ext = mediaUrl.split(".").pop()?.toLowerCase() || "";
+        const videoExts = ["mp4", "mov", "avi", "webm"];
+        const voiceExts = ["silk", "mp3", "wav", "ogg", "m4a"];
+        const imageExts = ["jpg", "jpeg", "png", "gif", "webp", "bmp", "svg"];
+        
+        if (videoExts.includes(ext)) {
+          mediaType = "video";
+        } else if (voiceExts.includes(ext)) {
+          mediaType = "voice";
+        } else if (imageExts.includes(ext)) {
+          mediaType = "image";
+        }
+        // 否则保持默认为 image
+      }
+      
+      const result = await sendMedia({ 
+        to, 
+        text: text ?? "", 
+        mediaUrl: mediaUrl ?? "", 
+        mediaType,
+        accountId, 
+        replyToId, 
+        account 
+      });
       return {
         channel: "qqbot",
         messageId: result.messageId,

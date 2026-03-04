@@ -450,20 +450,40 @@ export async function sendText(ctx: OutboundContext): Promise<OutboundResult> {
           // 如果是本地文件路径，读取并转换为 Base64
           if (!isHttpUrl && !voicePath.startsWith("data:")) {
             if (fs.existsSync(voicePath)) {
-              const fileBuffer = fs.readFileSync(voicePath);
               const ext = path.extname(voicePath).toLowerCase();
-              const mimeTypes: Record<string, string> = {
-                ".silk": "audio/silk",
-                ".mp3": "audio/mpeg",
-                ".wav": "audio/wav",
-                ".ogg": "audio/ogg",
-              };
-              const mimeType = mimeTypes[ext] ?? "audio/silk";
-              voiceUrl = `data:${mimeType};base64,${fileBuffer.toString("base64")}`;
+              
+              // 检查是否需要转换为 SILK 格式
+              const { needsSilkConversion, convertAudioToSilk } = await import("./utils/audio-convert");
+              
+              let silkPath = voicePath;
+              if (needsSilkConversion(voicePath)) {
+                console.log(`[qqbot] sendText: Converting ${ext} audio to SILK format...`);
+                const convertResult = await convertAudioToSilk(voicePath);
+                if (convertResult) {
+                  silkPath = convertResult.silkPath;
+                  console.log(`[qqbot] sendText: Converted to SILK (duration: ${convertResult.duration}ms)`);
+                } else {
+                  console.error(`[qqbot] sendText: Failed to convert audio to SILK`);
+                  continue;
+                }
+              }
+              
+              // 读取 SILK 文件并转换为 Base64
+              const fileBuffer = fs.readFileSync(silkPath);
+              voiceUrl = `data:audio/silk;base64,${fileBuffer.toString("base64")}`;
               console.log(`[qqbot] sendText: Converted local voice to Base64 (size: ${fileBuffer.length} bytes)`);
+              
+              // 如果是临时转换的 SILK 文件，删除它
+              if (silkPath !== voicePath) {
+                try {
+                  fs.unlinkSync(silkPath);
+                } catch {
+                  // 忽略删除错误
+                }
+              }
             } else {
               console.error(`[qqbot] sendText: Voice file not found: ${voicePath}`);
-              continue; // 跳过不存在的语音
+              continue;
             }
           }
 
@@ -767,8 +787,7 @@ export async function sendMedia(ctx: MediaOutboundContext): Promise<OutboundResu
             accessToken,
             target.id,
             processedMediaUrl,
-            replyToId ?? undefined,
-            undefined
+            replyToId ?? undefined
           );
           break;
         case "voice":
@@ -776,8 +795,7 @@ export async function sendMedia(ctx: MediaOutboundContext): Promise<OutboundResu
             accessToken,
             target.id,
             processedMediaUrl,
-            replyToId ?? undefined,
-            undefined
+            replyToId ?? undefined
           );
           break;
         case "image":
@@ -786,8 +804,7 @@ export async function sendMedia(ctx: MediaOutboundContext): Promise<OutboundResu
             accessToken,
             target.id,
             processedMediaUrl,
-            replyToId ?? undefined,
-            undefined
+            replyToId ?? undefined
           );
           break;
       }
@@ -798,8 +815,7 @@ export async function sendMedia(ctx: MediaOutboundContext): Promise<OutboundResu
             accessToken,
             target.id,
             processedMediaUrl,
-            replyToId ?? undefined,
-            undefined
+            replyToId ?? undefined
           );
           break;
         case "voice":
@@ -807,8 +823,7 @@ export async function sendMedia(ctx: MediaOutboundContext): Promise<OutboundResu
             accessToken,
             target.id,
             processedMediaUrl,
-            replyToId ?? undefined,
-            undefined
+            replyToId ?? undefined
           );
           break;
         case "image":
@@ -817,8 +832,7 @@ export async function sendMedia(ctx: MediaOutboundContext): Promise<OutboundResu
             accessToken,
             target.id,
             processedMediaUrl,
-            replyToId ?? undefined,
-            undefined
+            replyToId ?? undefined
           );
           break;
       }

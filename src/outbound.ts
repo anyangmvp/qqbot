@@ -717,12 +717,34 @@ export async function sendMedia(ctx: MediaOutboundContext): Promise<OutboundResu
         };
       }
       
+      // 检查是否需要转换为 SILK 格式（仅针对语音）
+      let finalMediaPath = mediaUrl;
+      if (mediaType === "voice") {
+        const ext = path.extname(mediaUrl).toLowerCase();
+        const { needsSilkConversion, convertAudioToSilk } = await import("./utils/audio-convert");
+        
+        if (needsSilkConversion(mediaUrl)) {
+          console.log(`[qqbot] sendMedia: Converting ${ext} audio to SILK format...`);
+          const convertResult = await convertAudioToSilk(mediaUrl);
+          if (convertResult) {
+            finalMediaPath = convertResult.silkPath;
+            console.log(`[qqbot] sendMedia: Converted to SILK (duration: ${convertResult.duration}ms)`);
+          } else {
+            console.error(`[qqbot] sendMedia: Failed to convert audio to SILK`);
+            return { 
+              channel: "qqbot", 
+              error: `音频格式转换失败：${mediaUrl}` 
+            };
+          }
+        }
+      }
+      
       // 读取文件内容
-      const fileBuffer = fs.readFileSync(mediaUrl);
+      const fileBuffer = fs.readFileSync(finalMediaPath);
       const base64Data = fileBuffer.toString("base64");
       
       // 根据文件扩展名确定 MIME 类型
-      const ext = path.extname(mediaUrl).toLowerCase();
+      const ext = path.extname(finalMediaPath).toLowerCase();
       const mimeTypes: Record<string, string> = {
         // 图片格式
         ".jpg": "image/jpeg",
@@ -752,6 +774,16 @@ export async function sendMedia(ctx: MediaOutboundContext): Promise<OutboundResu
       // 构造 Data URL
       processedMediaUrl = `data:${mimeType};base64,${base64Data}`;
       console.log(`[qqbot] sendMedia: local file converted to Base64 (size: ${fileBuffer.length} bytes, type: ${mimeType})`);
+      
+      // 如果是临时转换的 SILK 文件，删除它
+      if (finalMediaPath !== mediaUrl && mediaType === "voice") {
+        try {
+          fs.unlinkSync(finalMediaPath);
+          console.log(`[qqbot] sendMedia: cleaned up temporary SILK file`);
+        } catch {
+          // 忽略删除错误
+        }
+      }
       
     } catch (readErr) {
       const errMsg = readErr instanceof Error ? readErr.message : String(readErr);

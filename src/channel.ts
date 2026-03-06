@@ -265,7 +265,7 @@ export const qqbotPlugin: ChannelPlugin<ResolvedQQBotAccount> = {
       const account = resolveQQBotAccount(cfg, accountId);
       
       // 根据文件扩展名自动检测媒体类型
-      let mediaType: "image" | "video" | "voice" = "image";
+      let mediaType: "image" | "video" | "voice" | "file" = "file";
       if (mediaUrl) {
         const ext = mediaUrl.split(".").pop()?.toLowerCase() || "";
         const videoExts = ["mp4", "mov", "avi", "webm"];
@@ -279,7 +279,7 @@ export const qqbotPlugin: ChannelPlugin<ResolvedQQBotAccount> = {
         } else if (imageExts.includes(ext)) {
           mediaType = "image";
         }
-        // 否则保持默认为 image
+        // 其他类型默认使用 file
       }
       
       const result = await sendMedia({ 

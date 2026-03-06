@@ -2,7 +2,7 @@ import WebSocket from "ws";
 import path from "node:path";
 import * as fs from "node:fs";
 import type { ResolvedQQBotAccount, WSPayload, C2CMessageEvent, GuildMessageEvent, GroupMessageEvent } from "./types.js";
-import { getAccessToken, getGatewayUrl, sendC2CMessage, sendChannelMessage, sendGroupMessage, clearTokenCache, sendC2CImageMessage, sendGroupImageMessage, sendC2CVideoMessage, sendGroupVideoMessage, sendC2CVoiceMessage, sendGroupVoiceMessage, initApiConfig, startBackgroundTokenRefresh, stopBackgroundTokenRefresh, sendC2CInputNotify } from "./api.js";
+import { getAccessToken, getGatewayUrl, sendC2CMessage, sendChannelMessage, sendGroupMessage, clearTokenCache, sendC2CImageMessage, sendGroupImageMessage, sendC2CVideoMessage, sendGroupVideoMessage, sendC2CVoiceMessage, sendGroupVoiceMessage, sendC2CFileMessage, sendGroupFileMessage, initApiConfig, startBackgroundTokenRefresh, stopBackgroundTokenRefresh, sendC2CInputNotify } from "./api.js";
 import { loadSession, saveSession, clearSession, type SessionState } from "./session-store.js";
 import { recordKnownUser, flushKnownUsers } from "./known-users.js";
 import { getQQBotRuntime } from "./runtime.js";
@@ -488,11 +488,16 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
         const videoUrls: string[] = [];
         const videoMediaTypes: string[] = [];
         
+        // 文件URL列表（用于传递给AI处理）
+        const fileUrls: string[] = [];
+        const fileMediaTypes: string[] = [];
+        
         if (event.attachments?.length) {
           // ============ 接收附件描述生成（图片 / 语音 / 视频 / 其他） ============
           const imageDescriptions: string[] = [];
           const voiceDescriptions: string[] = [];
           const videoDescriptions: string[] = [];
+          const fileDescriptions: string[] = [];
           const otherAttachments: string[] = [];
           
           for (const att of event.attachments) {
@@ -570,7 +575,24 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
 
 请根据视频内容进行回复。`);
               } else {
-                otherAttachments.push(`[附件: ${localPath}]`);
+                // ============ 其他所有类型都视为文件消息处理 ============
+                log?.info(`[qqbot:${account.accountId}] File attachment detected: ${att.filename}, content_type: ${att.content_type}`);
+                
+                fileUrls.push(localPath);
+                fileMediaTypes.push(att.content_type || "application/octet-stream");
+                
+                const format = att.filename?.split(".").pop() || "未知格式";
+                const timestamp = new Date().toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" });
+                
+                fileDescriptions.push(`
+用户发送了一个文件：
+- 文件地址：${localPath}
+- 文件格式：${format}
+- 文件名：${att.filename || "unknown"}
+- 消息ID：${event.messageId}
+- 发送时间：${timestamp}
+
+请根据文件内容进行回复。`);
               }
               log?.info(`[qqbot:${account.accountId}] Downloaded attachment to: ${localPath}`);
             } else {
@@ -608,12 +630,27 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
 
 请根据视频内容进行回复。`);
               } else {
-                otherAttachments.push(`[附件: ${att.filename ?? att.content_type}] (下载失败)`);
+                // 其他所有类型都视为文件
+                fileUrls.push(att.url);
+                fileMediaTypes.push(att.content_type || "application/octet-stream");
+                
+                const format = att.filename?.split(".").pop() || "未知格式";
+                const timestamp = new Date().toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" });
+                
+                fileDescriptions.push(`
+用户发送了一个文件（下载失败，使用原始URL）：
+- 文件地址：${att.url}
+- 文件格式：${format}
+- 文件名：${att.filename || "unknown"}
+- 消息ID：${event.messageId}
+- 发送时间：${timestamp}
+
+请根据文件内容进行回复。`);
               }
             }
           }
           
-          // 组合附件信息：先图片描述，后语音描述，再视频描述，后其他附件
+          // 组合附件信息：先图片描述，后语音描述，再视频描述，再文件描述，后其他附件
           if (imageDescriptions.length > 0) {
             attachmentInfo += "\n" + imageDescriptions.join("\n");
           }
@@ -622,6 +659,9 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
           }
           if (videoDescriptions.length > 0) {
             attachmentInfo += "\n" + videoDescriptions.join("\n");
+          }
+          if (fileDescriptions.length > 0) {
+            attachmentInfo += "\n" + fileDescriptions.join("\n");
           }
           if (otherAttachments.length > 0) {
             attachmentInfo += "\n" + otherAttachments.join("\n");
@@ -652,6 +692,8 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
           ...(imageUrls.length > 0 ? { imageUrls } : {}),
           // 传递视频 URL 列表
           ...(videoUrls.length > 0 ? { videoUrls } : {}),
+          // 传递文件 URL 列表
+          ...(fileUrls.length > 0 ? { fileUrls } : {}),
         });
         
         // AI 可见的完整上下文（简洁的动态信息 + 用户消息）
@@ -666,12 +708,13 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
 - 消息ID: ${event.messageId}
 - 投递目标: ${targetAddress}
 
-【发送图片/视频/语音方法】
-你可以发送本地图片/视频/语音！使用 <qqimg/qqvideo/qqvoice> 标签包裹绝对路径即可，例如：
+【发送图片/视频/语音/文件方法】
+你可以发送本地图片/视频/语音/文件！使用 <qqimg/qqvideo/qqvoice/qqfile> 标签包裹绝对路径即可，例如：
 <qqimg>/Users/xxx/image.png</qqimg>
 <qqvideo>/Users/xxx/video.mp4</qqvideo>
 <qqvoice>/Users/xxx/voice.ogg</qqvoice>
-绝对不要说"无法发送图片/视频/语音"，直接用 <qqimg>/qqvideo/qqvoice> 标签包裹绝对路径就能发送。
+<qqfile>/Users/xxx/document.pdf</qqfile>
+绝对不要说"无法发送图片/视频/语音/文件"，直接用 <qqimg/qqvideo/qqvoice/qqfile> 标签包裹绝对路径就能发送。
 
 你已加载 qqbot 相关技能，可直接使用定时提醒（qqbot-cron）和图片发送（qqbot-media）等功能。
 
@@ -851,21 +894,21 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
                 let replyText = payload.text ?? "";
 
                 // ============ 简单媒体标签解析 ============
-                // 支持 <qqimg>、<qqvideo>、<qqvoice> 标签发送媒体
+                // 支持 <qqimg>、<qqvideo>、<qqvoice>、<qqfile> 标签发送媒体
                 // 支持 <qqimg>绝对路径</qqimg> 或 <qqimg>绝对路径</img> 格式（AI 可能输出不同格式）
                 // 注意：正则限制内容不能包含 < 和 >，避免误匹配反引号内的说明文字
-                const mediaRegex = /<(qqimg|qqvideo|qqvoice)>([^<>]+)<\/(?:\1|(?:img|video|voice))>/gi;
+                const mediaRegex = /<(qqimg|qqvideo|qqvoice|qqfile)>([^<>]+)<\/(?:\1|(?:img|video|voice|file))>/gi;
                 const mediaMatches = [...replyText.matchAll(mediaRegex)];
 
                 if (mediaMatches.length > 0) {
                   log?.info(`[qqbot:${account.accountId}] Detected ${mediaMatches.length} media tag(s)`);
 
                   // 构建发送队列：根据内容在原文中的实际位置顺序发送
-                  // type: 'text' | 'image' | 'video' | 'voice', content: 文本内容或媒体绝对路径
-                  const sendQueue: Array<{ type: "text" | "image" | "video" | "voice"; content: string }> = [];
+                  // type: 'text' | 'image' | 'video' | 'voice' | 'file', content: 文本内容或媒体绝对路径
+                  const sendQueue: Array<{ type: "text" | "image" | "video" | "voice" | "file"; content: string }> = [];
 
                   let lastIndex = 0;
-                  const mediaRegexWithIndex = /<(qqimg|qqvideo|qqvoice)>([^<>]+)<\/(?:\1|(?:img|video|voice))>/gi;
+                  const mediaRegexWithIndex = /<(qqimg|qqvideo|qqvoice|qqfile)>([^<>]+)<\/(?:\1|(?:img|video|voice|file))>/gi;
                   let match;
 
                   while ((match = mediaRegexWithIndex.exec(replyText)) !== null) {
@@ -879,10 +922,11 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
                     const tagType = match[1]?.trim();
                     const mediaPath = match[2]?.trim();
                     if (mediaPath) {
-                      const typeMap: Record<string, "image" | "video" | "voice"> = {
+                      const typeMap: Record<string, "image" | "video" | "voice" | "file"> = {
                         qqimg: "image",
                         qqvideo: "video",
                         qqvoice: "voice",
+                        qqfile: "file",
                       };
                       const type = typeMap[tagType];
                       if (type) {
@@ -1152,6 +1196,159 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
                         log?.error(`[qqbot:${account.accountId}] Failed to send voice from <qqvoice>: ${err}`);
                         await sendErrorMessage(`语音发送失败，语音路径：${voicePath}`);
                       }
+                    } else if (item.type === "file") {
+                      // 发送文件
+                      const filePath = item.content;
+                      try {
+                        let fileUrl = filePath;
+
+                        // 判断是本地文件还是 URL
+                        const isLocalPath = filePath.startsWith("/") || /^[a-zA-Z]:[\\/]/.test(filePath);
+                        const isHttpUrl = filePath.startsWith("http://") || filePath.startsWith("https://");
+
+                        if (isLocalPath) {
+                          // 本地文件：转换为 Base64 Data URL
+                          if (!fs.existsSync(filePath)) {
+                            log?.error(`[qqbot:${account.accountId}] File not found: ${filePath}`);
+                            await sendErrorMessage(`文件不存在: ${filePath}`);
+                            continue;
+                          }
+
+                          const fileBuffer = fs.readFileSync(filePath);
+                          const base64Data = fileBuffer.toString("base64");
+                          const ext = path.extname(filePath).toLowerCase();
+                          const mimeTypes: Record<string, string> = {
+                            // 办公文档
+                            ".pdf": "application/pdf",
+                            ".doc": "application/msword",
+                            ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                            ".xls": "application/vnd.ms-excel",
+                            ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            ".ppt": "application/vnd.ms-powerpoint",
+                            ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                            // 压缩文件
+                            ".zip": "application/zip",
+                            ".rar": "application/x-rar-compressed",
+                            ".7z": "application/x-7z-compressed",
+                            ".tar": "application/x-tar",
+                            ".gz": "application/gzip",
+                            // 文本文件
+                            ".txt": "text/plain",
+                            ".md": "text/markdown",
+                            ".markdown": "text/markdown",
+                            ".csv": "text/csv",
+                            ".tsv": "text/tab-separated-values",
+                            ".log": "text/plain",
+                            ".ini": "text/plain",
+                            ".conf": "text/plain",
+                            ".config": "text/plain",
+                            ".toml": "text/plain",
+                            ".yaml": "text/yaml",
+                            ".yml": "text/yaml",
+                            // 代码文件 - Web
+                            ".html": "text/html",
+                            ".htm": "text/html",
+                            ".css": "text/css",
+                            ".js": "text/javascript",
+                            ".ts": "text/typescript",
+                            ".jsx": "text/jsx",
+                            ".tsx": "text/tsx",
+                            ".vue": "text/plain",
+                            ".json": "application/json",
+                            ".xml": "application/xml",
+                            // 代码文件 - 后端
+                            ".py": "text/x-python",
+                            ".rb": "text/x-ruby",
+                            ".go": "text/x-go",
+                            ".rs": "text/x-rust",
+                            ".java": "text/x-java",
+                            ".kt": "text/x-kotlin",
+                            ".scala": "text/x-scala",
+                            ".php": "text/x-php",
+                            ".cs": "text/x-csharp",
+                            ".cpp": "text/x-c++",
+                            ".c": "text/x-c",
+                            ".h": "text/x-c",
+                            ".hpp": "text/x-c++",
+                            ".swift": "text/x-swift",
+                            ".m": "text/x-objective-c",
+                            ".mm": "text/x-objective-c++",
+                            // 代码文件 - 脚本
+                            ".sh": "text/x-shellscript",
+                            ".bash": "text/x-shellscript",
+                            ".zsh": "text/x-shellscript",
+                            ".fish": "text/x-shellscript",
+                            ".ps1": "text/x-powershell",
+                            ".bat": "text/x-batch",
+                            ".cmd": "text/x-batch",
+                            ".vbs": "text/vbscript",
+                            ".pl": "text/x-perl",
+                            ".pm": "text/x-perl",
+                            // 代码文件 - 其他
+                            ".sql": "text/x-sql",
+                            ".r": "text/x-r",
+                            ".lua": "text/x-lua",
+                            ".elm": "text/x-elm",
+                            ".hs": "text/x-haskell",
+                            ".ex": "text/x-elixir",
+                            ".exs": "text/x-elixir",
+                            ".erl": "text/x-erlang",
+                            ".hrl": "text/x-erlang",
+                            ".clj": "text/x-clojure",
+                            ".cljs": "text/x-clojure",
+                            ".fs": "text/x-fsharp",
+                            ".fsx": "text/x-fsharp",
+                            ".fsi": "text/x-fsharp",
+                            ".ml": "text/x-ocaml",
+                            ".mli": "text/x-ocaml",
+                            ".dart": "text/x-dart",
+                            ".groovy": "text/x-groovy",
+                            ".gradle": "text/x-groovy",
+                            // 手机应用文件
+                            ".apk": "application/vnd.android.package-archive",
+                            ".aab": "application/x-android-app-bundle",
+                            ".ipa": "application/octet-stream",
+                            // 电子书
+                            ".epub": "application/epub+zip",
+                            ".mobi": "application/x-mobipocket-ebook",
+                            // 地图/GPS
+                            ".gpx": "application/gpx+xml",
+                            ".kml": "application/vnd.google-earth.kml+xml",
+                            ".kmz": "application/vnd.google-earth.kmz",
+                            // 联系人/日历
+                            ".vcf": "text/vcard",
+                            ".ics": "text/calendar",
+                            // 字体文件
+                            ".ttf": "font/ttf",
+                            ".otf": "font/otf",
+                            ".woff": "font/woff",
+                            ".woff2": "font/woff2",
+                          };
+                          const mimeType = mimeTypes[ext] ?? "application/octet-stream";
+                          fileUrl = `data:${mimeType};base64,${base64Data}`;
+                          log?.info(`[qqbot:${account.accountId}] Converted local file to Base64 (size: ${fileBuffer.length} bytes)`);
+                        } else if (!isHttpUrl) {
+                          log?.error(`[qqbot:${account.accountId}] Invalid file path (not local or URL): ${filePath}`);
+                          continue;
+                        }
+
+                        // 发送文件
+                        await sendWithTokenRetry(async (token) => {
+                          if (event.type === "c2c") {
+                            await sendC2CFileMessage(token, event.senderId, fileUrl, event.messageId);
+                          } else if (event.type === "group" && event.groupOpenid) {
+                            await sendGroupFileMessage(token, event.groupOpenid, fileUrl, event.messageId);
+                          } else if (event.channelId) {
+                            // 频道暂不支持文件消息
+                            log?.info(`[qqbot:${account.accountId}] Channel does not support file messages`);
+                            await sendErrorMessage(`频道暂不支持发送文件`);
+                          }
+                        });
+                        log?.info(`[qqbot:${account.accountId}] Sent file via <qqfile> tag: ${filePath.slice(0, 60)}...`);
+                      } catch (err) {
+                        log?.error(`[qqbot:${account.accountId}] Failed to send file from <qqfile>: ${err}`);
+                        await sendErrorMessage(`文件发送失败，文件路径：${filePath}`);
+                      }
                     }
                   }
 
@@ -1351,6 +1548,174 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
                         } catch (err) {
                           log?.error(`[qqbot:${account.accountId}] Failed to send video: ${err}`);
                           await sendErrorMessage(`[QQBot] 发送视频失败: ${err}`);
+                        }
+                      } else if (parsedPayload.mediaType === "file") {
+                        // ============ 文件消息处理 ============
+                        log?.info(`[qqbot:${account.accountId}] Processing file payload: ${parsedPayload.path}`);
+                        
+                        let fileUrl = parsedPayload.path;
+                        const isHttpUrl = fileUrl.startsWith("http://") || fileUrl.startsWith("https://");
+                        const isDataUrl = fileUrl.startsWith("data:");
+                        
+                        // 本地文件绝对路径需要读取并转换为 Base64
+                        if (!isHttpUrl && !isDataUrl) {
+                          try {
+                            if (!fs.existsSync(fileUrl)) {
+                              log?.error(`[qqbot:${account.accountId}] File not found: ${fileUrl}`);
+                              await sendErrorMessage(`[QQBot] 文件不存在: ${fileUrl}`);
+                              return;
+                            }
+                            const fileBuffer = fs.readFileSync(fileUrl);
+                            const base64Data = fileBuffer.toString("base64");
+                            const ext = path.extname(fileUrl).toLowerCase();
+                            const mimeTypes: Record<string, string> = {
+                              // 办公文档
+                              ".pdf": "application/pdf",
+                              ".doc": "application/msword",
+                              ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                              ".xls": "application/vnd.ms-excel",
+                              ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                              ".ppt": "application/vnd.ms-powerpoint",
+                              ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                              // 压缩文件
+                              ".zip": "application/zip",
+                              ".rar": "application/x-rar-compressed",
+                              ".7z": "application/x-7z-compressed",
+                              ".tar": "application/x-tar",
+                              ".gz": "application/gzip",
+                              // 文本文件
+                              ".txt": "text/plain",
+                              ".md": "text/markdown",
+                              ".markdown": "text/markdown",
+                              ".csv": "text/csv",
+                              ".tsv": "text/tab-separated-values",
+                              ".log": "text/plain",
+                              ".ini": "text/plain",
+                              ".conf": "text/plain",
+                              ".config": "text/plain",
+                              ".toml": "text/plain",
+                              ".yaml": "text/yaml",
+                              ".yml": "text/yaml",
+                              // 代码文件 - Web
+                              ".html": "text/html",
+                              ".htm": "text/html",
+                              ".css": "text/css",
+                              ".js": "text/javascript",
+                              ".ts": "text/typescript",
+                              ".jsx": "text/jsx",
+                              ".tsx": "text/tsx",
+                              ".vue": "text/plain",
+                              ".json": "application/json",
+                              ".xml": "application/xml",
+                              // 代码文件 - 后端
+                              ".py": "text/x-python",
+                              ".rb": "text/x-ruby",
+                              ".go": "text/x-go",
+                              ".rs": "text/x-rust",
+                              ".java": "text/x-java",
+                              ".kt": "text/x-kotlin",
+                              ".scala": "text/x-scala",
+                              ".php": "text/x-php",
+                              ".cs": "text/x-csharp",
+                              ".cpp": "text/x-c++",
+                              ".c": "text/x-c",
+                              ".h": "text/x-c",
+                              ".hpp": "text/x-c++",
+                              ".swift": "text/x-swift",
+                              ".m": "text/x-objective-c",
+                              ".mm": "text/x-objective-c++",
+                              // 代码文件 - 脚本
+                              ".sh": "text/x-shellscript",
+                              ".bash": "text/x-shellscript",
+                              ".zsh": "text/x-shellscript",
+                              ".fish": "text/x-shellscript",
+                              ".ps1": "text/x-powershell",
+                              ".bat": "text/x-batch",
+                              ".cmd": "text/x-batch",
+                              ".vbs": "text/vbscript",
+                              ".pl": "text/x-perl",
+                              ".pm": "text/x-perl",
+                              // 代码文件 - 其他
+                              ".sql": "text/x-sql",
+                              ".r": "text/x-r",
+                              ".lua": "text/x-lua",
+                              ".elm": "text/x-elm",
+                              ".hs": "text/x-haskell",
+                              ".ex": "text/x-elixir",
+                              ".exs": "text/x-elixir",
+                              ".erl": "text/x-erlang",
+                              ".hrl": "text/x-erlang",
+                              ".clj": "text/x-clojure",
+                              ".cljs": "text/x-clojure",
+                              ".fs": "text/x-fsharp",
+                              ".fsx": "text/x-fsharp",
+                              ".fsi": "text/x-fsharp",
+                              ".ml": "text/x-ocaml",
+                              ".mli": "text/x-ocaml",
+                              ".dart": "text/x-dart",
+                            ".groovy": "text/x-groovy",
+                            ".gradle": "text/x-groovy",
+                            // 手机应用文件
+                            ".apk": "application/vnd.android.package-archive",
+                            ".aab": "application/x-android-app-bundle",
+                            ".ipa": "application/octet-stream",
+                            // 电子书
+                            ".epub": "application/epub+zip",
+                            ".mobi": "application/x-mobipocket-ebook",
+                            // 地图/GPS
+                            ".gpx": "application/gpx+xml",
+                            ".kml": "application/vnd.google-earth.kml+xml",
+                            ".kmz": "application/vnd.google-earth.kmz",
+                            // 联系人/日历
+                            ".vcf": "text/vcard",
+                            ".ics": "text/calendar",
+                            // 字体文件
+                            ".ttf": "font/ttf",
+                            ".otf": "font/otf",
+                            ".woff": "font/woff",
+                            ".woff2": "font/woff2",
+                            };
+                            const mimeType = mimeTypes[ext] ?? "application/octet-stream";
+                            fileUrl = `data:${mimeType};base64,${base64Data}`;
+                            log?.info(`[qqbot:${account.accountId}] Converted local file to Base64 (size: ${fileBuffer.length} bytes)`);
+                          } catch (readErr) {
+                            log?.error(`[qqbot:${account.accountId}] Failed to read local file: ${readErr}`);
+                            await sendErrorMessage(`[QQBot] 读取文件失败: ${readErr}`);
+                            return;
+                          }
+                        }
+
+                        // 发送文件
+                        try {
+                          await sendWithTokenRetry(async (token) => {
+                            if (event.type === "c2c") {
+                              await sendC2CFileMessage(token, event.senderId, fileUrl, event.messageId);
+                            } else if (event.type === "group" && event.groupOpenid) {
+                              await sendGroupFileMessage(token, event.groupOpenid, fileUrl, event.messageId);
+                            } else if (event.channelId) {
+                              // 频道暂不支持文件
+                              log?.info(`[qqbot:${account.accountId}] Channel does not support file messages`);
+                              await sendErrorMessage(`[QQBot] 频道暂不支持文件消息`);
+                              return;
+                            }
+                          });
+                          log?.info(`[qqbot:${account.accountId}] Sent file via media payload`);
+
+                          // 如果有描述文本，单独发送
+                          if (parsedPayload.caption) {
+                            await sendWithTokenRetry(async (token) => {
+                              if (event.type === "c2c") {
+                                await sendC2CMessage(token, event.senderId, parsedPayload.caption!, event.messageId);
+                              } else if (event.type === "group" && event.groupOpenid) {
+                                await sendGroupMessage(token, event.groupOpenid, parsedPayload.caption!, event.messageId);
+                              } else if (event.channelId) {
+                                await sendChannelMessage(token, event.channelId, parsedPayload.caption!, event.messageId);
+                              }
+                            });
+                          }
+                        } catch (err) {
+                          log?.error(`[qqbot:${account.accountId}] Failed to send file: ${err}`);
+                          await sendErrorMessage(`[QQBot] 发送文件失败: ${err}`);
                         }
                       } else {
                         log?.error(`[qqbot:${account.accountId}] Unknown media type: ${(parsedPayload as MediaPayload).mediaType}`);

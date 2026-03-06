@@ -776,6 +776,77 @@ export async function sendGroupVoiceMessage(
   return sendGroupMediaMessage(accessToken, groupOpenid, uploadResult.file_info, msgId, content);
 }
 
+/**
+ * 发送带文件的 C2C 单聊消息（封装上传 + 发送）
+ * @param fileUrl - 文件来源，支持：
+ *   - 公网 URL: https://example.com/file.pdf
+ *   - Base64 Data URL: data:application/pdf;base64,xxxxx
+ * @param content - 可选的文本内容（文件消息的附加文字说明）
+ */
+export async function sendC2CFileMessage(
+  accessToken: string,
+  openid: string,
+  fileUrl: string,
+  msgId?: string,
+  content?: string
+): Promise<{ id: string; timestamp: number }> {
+  let uploadResult: UploadMediaResponse;
+  
+  // 检查是否是 Base64 Data URL
+  if (fileUrl.startsWith("data:")) {
+    // 解析 Base64 Data URL: data:application/pdf;base64,xxxxx
+    const matches = fileUrl.match(/^data:([^;]+);base64,(.+)$/);
+    if (!matches) {
+      throw new Error("Invalid Base64 Data URL format");
+    }
+    const base64Data = matches[2];
+    // 使用 file_data 上传
+    uploadResult = await uploadC2CMedia(accessToken, openid, MediaFileType.FILE, undefined, base64Data, false);
+  } else {
+    // 公网 URL，使用 url 参数上传
+    uploadResult = await uploadC2CMedia(accessToken, openid, MediaFileType.FILE, fileUrl, undefined, false);
+  }
+  
+  // 发送富媒体消息
+  return sendC2CMediaMessage(accessToken, openid, uploadResult.file_info, msgId, content);
+}
+
+/**
+ * 发送带文件的群聊消息（封装上传 + 发送）
+ * @param fileUrl - 文件来源，支持：
+ *   - 公网 URL: https://example.com/file.pdf
+ *   - Base64 Data URL: data:application/pdf;base64,xxxxx
+ * @param content - 可选的文本内容（文件消息的附加文字说明）
+ */
+export async function sendGroupFileMessage(
+  accessToken: string,
+  groupOpenid: string,
+  fileUrl: string,
+  msgId?: string,
+  content?: string
+): Promise<{ id: string; timestamp: string }> {
+  let uploadResult: UploadMediaResponse;
+  
+  // 检查是否是 Base64 Data URL
+  if (fileUrl.startsWith("data:")) {
+    // 解析 Base64 Data URL: data:application/pdf;base64,xxxxx
+    const matches = fileUrl.match(/^data:([^;]+);base64,(.+)$/);
+    if (!matches) {
+      throw new Error("Invalid Base64 Data URL format");
+    }
+    const base64Data = matches[2];
+    // 使用 file_data 上传
+    uploadResult = await uploadGroupMedia(accessToken, groupOpenid, MediaFileType.FILE, undefined, base64Data, false);
+  } else {
+    // 公网 URL，使用 url 参数上传
+    uploadResult = await uploadGroupMedia(accessToken, groupOpenid, MediaFileType.FILE, fileUrl, undefined, false);
+  }
+  
+  // 发送富媒体消息
+  return sendGroupMediaMessage(accessToken, groupOpenid, uploadResult.file_info, msgId, content);
+}
+
+
 // ============ 后台 Token 刷新 (P1-1) ============
 
 /**

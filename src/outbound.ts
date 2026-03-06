@@ -19,6 +19,8 @@ import {
   sendGroupVideoMessage,
   sendC2CVoiceMessage,
   sendGroupVoiceMessage,
+  sendC2CFileMessage,
+  sendGroupFileMessage,
 } from "./api.js";
 
 // ============ 消息回复限流器 ============
@@ -159,7 +161,7 @@ export interface OutboundContext {
 export interface MediaOutboundContext extends OutboundContext {
   mediaUrl: string;
   /** 媒体类型，默认为 image */
-  mediaType?: "image" | "video" | "voice";
+  mediaType?: "image" | "video" | "voice" | "file";
 }
 
 export interface OutboundResult {
@@ -269,21 +271,22 @@ export async function sendText(ctx: OutboundContext): Promise<OutboundResult> {
     }
   }
 
-  // ============ <qqimg>/<qqvideo>/<qqvoice> 标签检测与处理 ============
+  // ============ <qqimg>/<qqvideo>/<qqvoice>/<qqfile> 标签检测与处理 ============
   // 支持 <qqimg>路径</qqimg> 或 <qqimg>路径</img> 格式发送图片
   // 支持 <qqvideo>路径</qqvideo> 或 <qqvideo>路径</video> 格式发送视频
   // 支持 <qqvoice>路径</qqvoice> 或 <qqvoice>路径</voice> 格式发送语音
-  const mediaRegex = /<(qqimg|qqvideo|qqvoice)>([^<>]+)<\/(?:\1|(?:img|video|voice))>/gi;
+  // 支持 <qqfile>路径</qqfile> 或 <qqfile>路径</file> 格式发送文件
+  const mediaRegex = /<(qqimg|qqvideo|qqvoice|qqfile)>([^<>]+)<\/(?:\1|(?:img|video|voice|file))>/gi;
   const mediaMatches = text.match(mediaRegex);
 
   if (mediaMatches && mediaMatches.length > 0) {
     console.log(`[qqbot] sendText: Detected ${mediaMatches.length} media tag(s), processing...`);
 
     // 构建发送队列：根据内容在原文中的实际位置顺序发送
-    const sendQueue: Array<{ type: "text" | "image" | "video" | "voice"; content: string }> = [];
+    const sendQueue: Array<{ type: "text" | "image" | "video" | "voice" | "file"; content: string }> = [];
 
     let lastIndex = 0;
-    const mediaRegexWithIndex = /<(qqimg|qqvideo|qqvoice)>([^<>]+)<\/(?:\1|(?:img|video|voice))>/gi;
+    const mediaRegexWithIndex = /<(qqimg|qqvideo|qqvoice|qqfile)>([^<>]+)<\/(?:\1|(?:img|video|voice|file))>/gi;
     let match;
 
     while ((match = mediaRegexWithIndex.exec(text)) !== null) {
@@ -307,6 +310,9 @@ export async function sendText(ctx: OutboundContext): Promise<OutboundResult> {
         } else if (tagType === "qqvoice") {
           sendQueue.push({ type: "voice", content: mediaPath });
           console.log(`[qqbot] sendText: Found voice path in <qqvoice>: ${mediaPath}`);
+        } else if (tagType === "qqfile") {
+          sendQueue.push({ type: "file", content: mediaPath });
+          console.log(`[qqbot] sendText: Found file path in <qqfile>: ${mediaPath}`);
         }
       }
 
@@ -496,6 +502,72 @@ export async function sendText(ctx: OutboundContext): Promise<OutboundResult> {
             lastResult = { channel: "qqbot", messageId: result.id, timestamp: result.timestamp };
           }
           console.log(`[qqbot] sendText: Sent voice via <qqvoice> tag: ${voicePath.slice(0, 60)}...`);
+        } else if (item.type === "file") {
+          // 发送文件
+          const filePath = item.content;
+          const isHttpUrl = filePath.startsWith("http://") || filePath.startsWith("https://");
+          
+          let fileUrl = filePath;
+          
+          // 如果是本地文件路径，读取并转换为 Base64
+          if (!isHttpUrl && !filePath.startsWith("data:")) {
+            if (fs.existsSync(filePath)) {
+              const fileBuffer = fs.readFileSync(filePath);
+              const base64Data = fileBuffer.toString("base64");
+              const ext = path.extname(filePath).toLowerCase();
+              const mimeTypes: Record<string, string> = {
+                // 办公文档
+                ".pdf": "application/pdf",
+                ".doc": "application/msword",
+                ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                ".xls": "application/vnd.ms-excel",
+                ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                ".ppt": "application/vnd.ms-powerpoint",
+                ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                // 压缩文件
+                ".zip": "application/zip",
+                ".rar": "application/x-rar-compressed",
+                ".7z": "application/x-7z-compressed",
+                // 文本文件
+                ".txt": "text/plain",
+                // 手机应用文件
+                ".apk": "application/vnd.android.package-archive",
+                ".aab": "application/x-android-app-bundle",
+                ".ipa": "application/octet-stream",
+                // 电子书
+                ".epub": "application/epub+zip",
+                ".mobi": "application/x-mobipocket-ebook",
+                // 地图/GPS
+                ".gpx": "application/gpx+xml",
+                ".kml": "application/vnd.google-earth.kml+xml",
+                ".kmz": "application/vnd.google-earth.kmz",
+                // 联系人/日历
+                ".vcf": "text/vcard",
+                ".ics": "text/calendar",
+                // 字体文件
+                ".ttf": "font/ttf",
+                ".otf": "font/otf",
+                ".woff": "font/woff",
+                ".woff2": "font/woff2",
+              };
+              const mimeType = mimeTypes[ext] ?? "application/octet-stream";
+              fileUrl = `data:${mimeType};base64,${base64Data}`;
+              console.log(`[qqbot] sendText: Converted local file to Base64 (size: ${fileBuffer.length} bytes)`);
+            } else {
+              console.error(`[qqbot] sendText: File not found: ${filePath}`);
+              continue; // 跳过不存在的文件
+            }
+          }
+          
+          // 发送文件
+          if (target.type === "c2c") {
+            const result = await sendC2CFileMessage(accessToken, target.id, fileUrl, replyToId ?? undefined);
+            lastResult = { channel: "qqbot", messageId: result.id, timestamp: result.timestamp };
+          } else if (target.type === "group") {
+            const result = await sendGroupFileMessage(accessToken, target.id, fileUrl, replyToId ?? undefined);
+            lastResult = { channel: "qqbot", messageId: result.id, timestamp: result.timestamp };
+          }
+          console.log(`[qqbot] sendText: Sent file via <qqfile> tag: ${filePath.slice(0, 60)}...`);
         }
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err);
@@ -682,7 +754,7 @@ export async function sendProactiveMessage(
  */
 export async function sendMedia(ctx: MediaOutboundContext): Promise<OutboundResult> {
   const { to, text, replyToId, account } = ctx;
-  const { mediaUrl, mediaType = "image" } = ctx;
+  const { mediaUrl, mediaType = "file" } = ctx;
   console.log(`[qqbot] sendMedia: start sending media message, target=${to}, type=${mediaType}`);
 
   if (!account.appId || !account.clientSecret) {
@@ -763,12 +835,13 @@ export async function sendMedia(ctx: MediaOutboundContext): Promise<OutboundResu
         ".wav": "audio/wav",
       };
       
-      const mimeType = mimeTypes[ext];
+      var mimeType = mimeTypes[ext];
       if (!mimeType) {
-        return { 
-          channel: "qqbot", 
-          error: `不支持的文件格式：${ext}。支持的格式：${Object.keys(mimeTypes).join(", ")}` 
-        };
+        // return { 
+        //   channel: "qqbot", 
+        //   error: `不支持的文件格式：${ext}。支持的格式：${Object.keys(mimeTypes).join(", ")}` 
+        // };
+        mimeType = "application/octet-stream";
       }
       
       // 构造 Data URL
@@ -830,6 +903,14 @@ export async function sendMedia(ctx: MediaOutboundContext): Promise<OutboundResu
             replyToId ?? undefined
           );
           break;
+        case "file":
+          mediaResult = await sendC2CFileMessage(
+            accessToken,
+            target.id,
+            processedMediaUrl,
+            replyToId ?? undefined
+          );
+          break;
         case "image":
         default:
           mediaResult = await sendC2CImageMessage(
@@ -859,6 +940,21 @@ export async function sendMedia(ctx: MediaOutboundContext): Promise<OutboundResu
           );
           break;
         case "image":
+          mediaResult = await sendGroupImageMessage(
+            accessToken,
+            target.id,
+            processedMediaUrl,
+            replyToId ?? undefined
+          );
+          break;
+        case "file":
+          mediaResult = await sendGroupFileMessage(
+            accessToken,
+            target.id,
+            processedMediaUrl,
+            replyToId ?? undefined
+          );
+          break;
         default:
           mediaResult = await sendGroupImageMessage(
             accessToken,

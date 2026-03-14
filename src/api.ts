@@ -427,23 +427,29 @@ export async function sendChannelMessage(
   accessToken: string,
   channelId: string,
   content: string,
-  msgId?: string
+  msgId?: string,
+  messageReference?: string
 ): Promise<{ id: string; timestamp: string }> {
-  return apiRequest(accessToken, "POST", `/channels/${channelId}/messages`, {
+  const body: Record<string, unknown> = {
     content,
     ...(msgId ? { msg_id: msgId } : {}),
-  });
+  };
+  if (messageReference) {
+    body.message_reference = { message_id: messageReference };
+  }
+  return apiRequest(accessToken, "POST", `/channels/${channelId}/messages`, body);
 }
 
 export async function sendGroupMessage(
   accessToken: string,
   groupOpenid: string,
   content: string,
-  msgId?: string
+  msgId?: string,
+  messageReference?: string
 ): Promise<MessageResponse> {
   const msgSeq = msgId ? getNextMsgSeq(msgId) : 1;
-  const body = buildMessageBody(content, msgId, msgSeq);
-  return apiRequest(accessToken, "POST", `/v2/groups/${groupOpenid}/messages`, body);
+  const body = buildMessageBody(content, msgId, msgSeq, messageReference);
+  return sendAndNotify(accessToken, "POST", `/v2/groups/${groupOpenid}/messages`, body, { text: content });
 }
 
 function buildProactiveMessageBody(content: string): Record<string, unknown> {
